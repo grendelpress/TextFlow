@@ -7,8 +7,14 @@ import {
   Phone,
 } from "lucide-react";
 
+function convoKey(contactPhone: string, ourNumber: string) {
+  return `${contactPhone}|${ourNumber}`;
+}
+
 interface Conversation {
+  key: string;
   contact_phone: string;
+  our_number: string;
   last_message: Message;
   messages: Message[];
   unread: boolean;
@@ -107,16 +113,21 @@ export function MessagesPage() {
   const conversations: Conversation[] = (() => {
     const map = new Map<string, Message[]>();
     for (const m of messages) {
-      const key = m.contact_phone;
+      const ourNum = m.direction === "outbound" ? m.from_number : m.to_number;
+      const key = convoKey(m.contact_phone, ourNum);
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(m);
     }
     return Array.from(map.entries())
-      .map(([contact_phone, msgs]) => {
+      .map(([key, msgs]) => {
         const sorted = [...msgs].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        const rep = sorted[0];
+        const ourNum = rep.direction === "outbound" ? rep.from_number : rep.to_number;
         return {
-          contact_phone,
-          last_message: sorted[0],
+          key,
+          contact_phone: rep.contact_phone,
+          our_number: ourNum,
+          last_message: rep,
           messages: sorted.reverse(),
           unread: sorted[sorted.length - 1].direction === "inbound",
         };
@@ -128,33 +139,31 @@ export function MessagesPage() {
     if (!search) return true;
     return (
       c.contact_phone.includes(search) ||
+      c.our_number.includes(search) ||
+      getFriendlyName(c.our_number).toLowerCase().includes(search.toLowerCase()) ||
       c.messages.some((m) => m.body.toLowerCase().includes(search.toLowerCase()))
     );
   });
 
-  const activeThread = activeConvo ? conversations.find((c) => c.contact_phone === activeConvo) : null;
+  const activeThread = activeConvo ? conversations.find((c) => c.key === activeConvo) : null;
 
-  const openConvo = (contact_phone: string) => {
-    setActiveConvo(contact_phone);
+  const openConvo = (key: string) => {
+    setActiveConvo(key);
     setReplyError("");
     setReplyBody("");
-    const convo = conversations.find((c) => c.contact_phone === contact_phone);
+    const convo = conversations.find((c) => c.key === key);
     if (convo) {
-      const msgs = [...convo.messages].reverse();
-      const lastOut = msgs.find((m) => m.direction === "outbound");
-      const lastIn = msgs.find((m) => m.direction === "inbound");
-      const num = lastOut?.from_number ?? lastIn?.to_number ?? phoneNumbers[0]?.number ?? "";
-      setReplyFrom(num);
+      setReplyFrom(convo.our_number);
     }
   };
 
   const sendReply = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeConvo || !replyBody.trim()) return;
+    if (!activeThread || !replyBody.trim()) return;
     setReplying(true);
     setReplyError("");
     try {
-      await swProxy("send-sms", "POST", { from: replyFrom, to: activeConvo, body: replyBody.trim() });
+      await swProxy("send-sms", "POST", { from: replyFrom, to: activeThread.contact_phone, body: replyBody.trim() });
       setReplyBody("");
       await load();
     } catch (err: unknown) {
@@ -173,7 +182,7 @@ export function MessagesPage() {
       setShowCompose(false);
       setForm((f) => ({ ...f, to: "", body: "" }));
       await load();
-      setActiveConvo(form.to);
+      setActiveConvo(convoKey(form.to, form.from));
     } catch (err: unknown) {
       setComposeError(err instanceof Error ? err.message : "Failed to send");
     } finally {
@@ -242,14 +251,14 @@ export function MessagesPage() {
             </div>
           ) : (
             filteredConvos.map((convo) => {
-              const isActive = activeConvo === convo.contact_phone;
+              const isActive = activeConvo === convo.key;
               const last = convo.last_message;
               const statusDot = STATUS_DOT[last.status] || "bg-slate-300";
               const isInbound = last.direction === "inbound";
               return (
                 <button
-                  key={convo.contact_phone}
-                  onClick={() => openConvo(convo.contact_phone)}
+                  key={convo.key}
+                  onClick={() => openConvo(convo.key)}
                   className={`w-full flex items-start gap-3 px-4 py-3.5 border-b border-slate-50 text-left transition-colors ${isActive ? "bg-blue-50 border-l-2 border-l-blue-500" : "hover:bg-slate-50/70"}`}
                 >
                   <div className="relative flex-shrink-0">
@@ -376,24 +385,10 @@ export function MessagesPage() {
                 <div className="mb-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-xs">{replyError}</div>
               )}
               <form onSubmit={sendReply} className="flex items-end gap-2">
-                {phoneNumbers.length > 1 && (
-                  <div className="relative flex-shrink-0">
-                    <select
-                      value={replyFrom}
-                      onChange={(e) => setReplyFrom(e.target.value)}
-                      className="appearance-none bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 pr-7 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      {phoneNumbers.map((pn) => (
-                        <option key={pn.id} value={pn.number}>{pn.friendly_name || pn.number}</option>
-                      ))}
-                    </select>
-                    <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                  </div>
-                )}
-                {phoneNumbers.length === 1 && (
+                {replyFrom && (
                   <div className="flex items-center gap-1 flex-shrink-0 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">
                     <Phone size={11} className="text-slate-400" />
-                    <span className="text-xs text-slate-500">{getFriendlyName(phoneNumbers[0].number)}</span>
+                    <span className="text-xs text-slate-500">{getFriendlyName(replyFrom)}</span>
                   </div>
                 )}
                 <div className="flex-1 relative">
